@@ -1,0 +1,54 @@
+#!/bin/bash
+
+# Print usage if incorrect number of args are supplied
+if [ $# -eq 0 ]; then
+	echo "Usage: ./interestingness video [smoothing window in frames]"; exit 1
+fi
+
+# If smoothing window isn't passed, set it to 1s
+WINDOW="$2"
+if [ -z "$WINDOW" ]; then WINDOW='30'; fi
+
+# Show a progress bar of the video being fed in
+pv -pe "$1" | \
+# Use ffprobe to dump frame #, frame type (I/P/B) and frame size (bytes)
+ffprobe -v warning -hide_banner -stats -i pipe:0 -select_streams v:0 -show_frames -show_entries frame=coded_picture_number,pict_type,pkt_size | \
+# Some nasty command line-fu to format ffprobe data into a CSV
+cut -d "=" -f 2 | sed "s/\[FRAME\]//g" | sed "s/\[\/FRAME\]//g" | tr '\n' ',' | sed "s/,,,/\n/g" | sed "s/,,$//g" | sed "s/^,//g" | sort -t, -k3,3n > frames.csv
+
+# All this just to make the graph image, you think this would be the easiest part...
+python3 -c "
+import matplotlib.pyplot as plt
+import pandas as pd
+
+sizes = [0]
+
+# Clean and split all non-empty lines
+with open('frames.csv', 'r') as frameCSV:
+	frames = [i.strip().split(',') for i in frameCSV.read().split('\n')[:-1]]
+
+# For each frame
+for f, frame in enumerate(frames[1:]):
+	# If it's not an I frame (full frame), write the frame size as is
+	if frame[1] != 'I':
+		sizes.append(int(frame[0]))
+	# If it's an I frame, average the size from the previous and next P/B frames
+	else:
+		while frames[f + 2][1] == 'I': f += 1
+		sizes.append((int(sizes[-1]) + int(frames[f + 2][0])) // 2)
+
+# Smooth the series with a window of passed frames
+sizes2 = list(pd.Series(sizes).rolling($WINDOW).mean())
+
+# A whole bunch of yuck to save a graph image without any other artifacts / whitespace
+fig = plt.figure()
+fig.set_size_inches(10,2)
+ax = plt.axes([0,0,1,1], frameon=False)
+ax.get_xaxis().set_visible(False)
+ax.get_yaxis().set_visible(False)
+plt.autoscale(tight=True)
+plt.plot(sizes2)
+plt.savefig('interestingness.png', bbox_inches='tight', pad_inches = 0, dpi=100)"
+
+# We don't need this file anymore
+rm frames.csv
